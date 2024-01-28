@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>rogue</title>
+<script src="matrix.js">
+</script>
+<script src="curses.js">
+</script>
+<script src="vbo.js">
+</script>
+<script src="program.js">
+</script>
+<script src="prag.js">
+</script>
+<script>
+var curses;
+var wasm;
+var memory;
+var table;
+var tail = 0;
+var glf_s = "";
+var glf;
+var glf_done = false;
+var wasm_done = false;
+var gl;
+var caM = matrix(Float32Array, 4, 4);
+var is_wgetch_waiting = false;
+var is_fgets_waiting = false;
+var wgetch_c = 0;
+
+function malloc_int(i32)
+{
+  if (tail == 0) {
+    tail = memory.length;
+  }
+  tail = tail - i32;
+  return tail;
+}
+
+function keydown(e)
+{
+  let key = e.key;
+  if (is_fgets_waiting) {
+    console.log(key)
+    if (key != "Enter")
+      return;
+    wasm.instance.exports.asyncify_start_rewind();
+    console.log(wasm.instance.exports);
+    wasm.instance.exports.main("rogue");
+    //wasm.instance.exports.asyncify_stop_unwind();
+  }
+  if (is_wgetch_waiting) {
+    switch (key) {
+      case "ArrowRight": key = "l"; break;
+      case "ArrowLeft": key = "h"; break;
+      case "ArrowUp": key = "k"; break;
+      case "ArrowDown": key = "j"; break;
+      default: break;
+    }
+    if (key.length > 1) {
+      return;
+    }
+    wgetch_c = key.charCodeAt(0);
+    wasm.instance.exports.asyncify_start_rewind();
+    console.log(wasm.instance.exports);
+    wasm.instance.exports.main("rogue");
+    //wasm.instance.exports.asyncify_stop_unwind();
+  }
+}
+
+function s_from_memory(data)
+{
+  let i = 0;
+  let s = "";
+  while (memory[data + i] != 0) {
+    s += String.fromCharCode(memory[data + i]);
+    i++;
+  }
+  return s;
+}
+
+function s_printf_d(modifier, data, output_type)
+{
+  let left_align = false;
+  let zero_pad = false;
+  let i = 0;
+  let data_orig = data;
+  if (modifier[i] == '-') {
+    left_align = true;
+    i++;
+  }
+  if (modifier[i] == '0') {
+    zero_pad = true;
+    i++;
+  }
+  let width = 0;
+  if (i >= modifier.length) {
+  } else if (modifier[i] == '*') {
+    width = (1 << 24) * memory[data + 3] +
+            (1 << 16) * memory[data + 2] +
+            (1 <<  8) * memory[data + 1] +
+            (1 <<  0) * memory[data + 0];
+    data += 4;
+  } else if ('1' <= modifier[i] && modifier[i] <= '9') {
+    width = Number(modifier.substr(i));
+  } else {
+    console.error("Unhandled modifier: " + modifier);
+  }
+
+  let n = (1 << 24) * memory[data + 3] +
+          (1 << 16) * memory[data + 2] +
+          (1 <<  8) * memory[data + 1] +
+          (1 <<  0) * memory[data + 0];
+  data += 4;
+
+  let s;
+  if (output_type == 'd') {
+    s = n.toString(10);
+  } else if (output_type == 'x') {
+    s = n.toString(16);
+  } else if (output_type == 'X') {
+    s = n.toString(16).toUpperCase();
+  }
+  if (width != 0) {
+    let adjust = width - s.length;
+    for (let i=0; i<adjust; i++) {
+      if (left_align) {
+        s = s + " ";
+      } else if (zero_pad) {
+        s = "0" + s;
+      } else {
+        s = " " + s;
+      }
+    }
+  }
+
+  return { s: s, n: data - data_orig };
+}
+
+function s_from_printf(i32_1, i32_2)
+{
+  let fmt = i32_1;
+  let data = i32_2;
+  let s = "";
+  let i = 0;
+  let modifier = "";
+  while (memory[fmt + i] != 0) {
+    let c = String.fromCharCode(memory[fmt + i]);
+    if (c != '%') {
+      s += String.fromCharCode(memory[fmt + i]);
+      i++;
+      modifier = "";
+      continue;
+    }
+    let is_modifier = false;
+    i++;
+    do {
+      c = String.fromCharCode(memory[fmt + i]);
+      is_modifier = false;
+      switch (c) {
+        case '%': s += "%"; break;
+        case '-':
+        case '*':
+        case ' ':
+        case '0': case '1': case '2': case '3': case '4':
+        case '5': case '6': case '7': case '8': case '9':
+          modifier += c;
+          is_modifier = true;
+          break;
+        case 'd': 
+        case 'x': 
+        case 'X': 
+          res = s_printf_d(modifier, data, c);
+          data += res.n;
+          s += res.s;
+          break;
+        case 'p':
+          res = s_printf_d("08X", data, 'X');
+          data += res.n;
+          s += "0x" + res.s;
+          break;
+        case 'c':
+          let cc = (1 << 24) * memory[data + 3] +
+                   (1 << 16) * memory[data + 2] +
+                   (1 <<  8) * memory[data + 1] +
+                   (1 <<  0) * memory[data + 0];
+          data += 4;
+          s += String.fromCharCode(cc);
+          break;
+        case 's':
+          let s_n = (1 << 24) * memory[data + 3] +
+                    (1 << 16) * memory[data + 2] +
+                    (1 <<  8) * memory[data + 1] +
+                    (1 <<  0) * memory[data + 0];
+          data += 4;
+          let s_c = memory[s_n];
+          while (s_c != 0) {
+            s += String.fromCharCode(s_c);
+            s_n++;
+            s_c = memory[s_n];
+          }
+          break;
+        default:
+          s += "%" + modifier + c;
+          break;
+      }
+      i++;
+    } while (is_modifier);
+  }
+  return s;
+}
+
+const importObject = {
+  env: {
+    js: new WebAssembly.Table({ initial: 2, element: "anyfunc" }),
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 32, shared: true }),
+    memoryBase: 0,
+
+    /* (type (;0;) (func (param i32))) */
+    exit: function(i32) {
+      console.log("exit(" + i32 + ")");
+      throw new Error(i32);
+    },
+    free: function(i32) {
+      console.log("free");
+    },
+    perror: function (i32) {
+      let s = "";
+      let i = 0;
+      while (memory[i32 + i] != 0) {
+        s += String.fromCharCode(memory[i32 + i]);
+      }
+      console.error(s);
+    },
+    _exit: function(i32) {
+      console.log("_exit");
+      throw new Error(i32);
+    },
+    srand: function(i32) {
+      console.log("srand");
+    },
+    rewind: function(i32) {
+      console.log("rewind"); 
+    },
+
+    /* (type (;1;) (func (param i32 i32) (result i32))) */
+    move: function (i32_1, i32_2) {
+      console.log("move(" + i32_1 + "," + i32_2 + ")");
+      let y = i32_1;
+      let x = i32_2;
+      curses.move(y,x);
+      return 0;
+    },
+    mvinch: function (i32_1, i32_2) {
+      let y = i32_1;
+      let x = i32_2;
+      curses.move(y,x);
+      let c = curses.inch();
+      console.log("mvinch(" + i32_1 + "," + i32_2 + "): " + c);
+      return c;
+    },
+    clearok: function (i32_1, i32_2) { console.log("clearok"); return 0; },
+    waddstr: function (i32_1, i32_2) { console.log("waddstr"); return 0; },
+    strcpy: function (i32_1, i32_2) { 
+      console.log("strcpy(" + i32_1 + "," + i32_2 + ")");
+      let dst = i32_1;
+      let src = i32_2;
+      let i = 0;
+      let s = "";
+      while (memory[src + i] != 0) {
+        memory[dst + i] = memory[src + i];
+	s += String.fromCharCode(memory[src + i]);
+	i++;
+      }
+      memory[dst + i] = 0;
+      console.log(s);
+      return dst;
+    },
+    strchr: function (i32_1, i32_2) {
+      console.log("strchr(" + i32_1 + "," + i32_2 + ")");
+      let data = i32_1;
+      let find_c = i32_2;
+      if (find_c == 0) {
+        return 0;
+      }
+      let i = 0;
+      let c = memory[data + i];
+      while (c != 0 && c != find_c) {
+        i++;
+        c = memory[data + i];
+      }
+      if (c == 0) {
+        return 0;
+      }
+      return data + i;
+    },
+    strcat: function (i32_1, i32_2) {
+      console.log("strcat(" + i32_1 + "," + i32_2 + ")");
+      let dst = i32_1;
+      let src = i32_2;
+      let i = 0;
+      let j = 0;
+      while (memory[dst + i] != 0) { i++; }
+      let c;
+      do {
+        c = memory[src + j];
+        console.log({i,j,c});
+        memory[dst + i] = c;
+        i++;
+        j++;
+      } while (c != 0);
+      
+      return dst;
+    },
+    printw: function (i32_1, i32_2) {
+      let s = s_from_printf(i32_1, i32_2);
+      console.log("printw(" + i32_1 + "," + i32_2 + ")", s);
+      for (let i=0; i<s.length; i++) {
+        curses.addch(s.charCodeAt(i));
+      }
+      return 0;
+    },
+    calloc: function (i32_1, i32_2) {
+      console.log("calloc(" + i32_1 + "," + i32_2 + ")");
+      let n = i32_1 * i32_2;
+      let data = malloc_int(n);
+      for (let i=0; i<n; i++) {
+	memory[data + i] = 0;
+      }
+      return data;
+    },
+    keypad: function (i32_1, i32_2) { console.log("keypad"); return 0; },
+    strcmp: function (i32_1, i32_2) { console.log("strcmp(" + i32_1 + "," + i32_2 + ")"); return 0; },
+    printf: function (i32_1, i32_2) {
+      console.log("printf(" + i32_1 + "," + i32_2 + ")");
+      let s = s_from_printf(i32_1, i32_2);
+      console.log(s);
+      return s.length;
+    },
+    idlok: function (i32_1, i32_2) { console.log("idlok"); return 0; },
+    signal: function (i32_1, i32_2) { console.log("signal(" + i32_1 + "," + i32_2 + ")"); return 0; },
+    chmod: function (i32_1, i32_2) { console.log("chmod"); return 0; },
+    setregid: function (i32_1, i32_2) { console.log("setregid"); return 0; },
+    setreuid: function (i32_1, i32_2) { console.log("setreuid"); return 0; },
+    stat: function (i32_1, i32_2) { console.log("stat"); return 0; },
+    tcgetattr: function (i32_1, i32_2) { console.log("tcgetattr"); return 0; },
+    getloadavg: function (i32_1, i32_2) { console.log("getloadavg"); return 0; },
+    leaveok: function (i32_1, i32_2) { console.log("leaveok"); return 0; },
+    waddch: function (i32_1, i32_2) { console.log("waddch"); return 0; },
+    fopen: function (i32_1, i32_2) { console.log("fopen"); return 0; },
+    putc: function (i32_1, i32_2) { console.log("putc"); return 0; },
+
+    /* (type (;2;) (func (param i32) (result i32))) */
+    abs: function (i32) { return Math.abs(i32); },
+    addch: function (i32) {
+      console.log("addch(" + i32 + ")", String.fromCharCode(i32));
+      let c = i32;
+      curses.addch(c);
+      return 0;
+    },
+    isdigit: function (i32) {
+      console.log("isdigit(" + i32 + ")");
+      let c = i32;
+      return ("0".charCodeAt(0) <= c && c <= "9".charCodeAt(0));
+    },
+    wrefresh: function (i32) { console.log("wrefresh"); return 0; },
+    unctrl: function (i32) { console.log("unctrl"); return 0; },
+    wclear: function (i32) { console.log("wclear"); return 0; },
+    touchwin: function (i32) { console.log("touchwin"); return 0; },
+    isupper: function (i32) { 
+      console.log("isupper(" + i32 + ")");
+      let c = i32;
+      return ("A".charCodeAt(0) <= c && c <= "Z".charCodeAt(0));
+    },
+    strlen: function (i32) {
+      let i = 0;
+      let s = "";
+      while (memory[i32 + i] != 0) {
+      	s += String.fromCharCode(memory[i32 + i]);
+	i++;
+      }
+      console.log("strlen(" + i32 + "): " + s + " (" + i + ")");
+      return i;
+    }, 
+    malloc: function (i32) {
+      return malloc_int(i32);
+    },
+    toascii: function (i32) { console.log("toascii"); return 0; },
+    atoi: function (i32) {
+      let s = "";
+      let data = i32;
+      let i = 0;
+      while ("0".charCodeAt(0) <= memory[data + i] && memory[data + i] <= "9".charCodeAt(0)) {
+        s += String.fromCharCode(memory[data + i]);
+	i++;
+      }
+      console.log("atoi(" + i32 + "): " + s + "->" + Number(s));
+      return Number(s);
+    },
+    toupper: function (i32) {
+      console.log("toupper(" + i32 + ")");
+      let c = i32;
+      if ("a".charCodeAt(0) <= c && c <= "z".charCodeAt(0)) {
+        c = c - "a".charCodeAt(0) + "A".charCodeAt(0);
+      }
+      return c;
+    },
+    islower: function (i32) {
+      console.log("islower(" + i32 + ")");
+      let c = i32;
+      return ("a".charCodeAt(0) <= c && c <= "z".charCodeAt(0));
+    },
+    getcury: function (i32) {
+      console.log("getcury");
+      return curses.getcury;
+    },
+    getcurx: function (i32) {
+      console.log("getcurx");
+      return curses.getcurx;
+    },
+    getenv: function (i32) { console.log("getenv(" + i32 + ")"); return 0; },
+    fflush: function (i32) { console.log("fflush"); return 0; },
+    putchar: function (i32) { console.log("putchar"); return 0; },
+    unlink: function (i32) { console.log("unlink"); return 0; },
+    getpwuid: function (i32) { console.log("getpwuid(" + i32 + ")"); return 0; },
+    sleep: function (i32) { console.log("sleep"); return 0; },
+    wait: function (i32) { console.log("wait"); return 0; },
+    getpass: function (i32) { console.log("getpass"); return 0; },
+    wgetch: function (i32) {
+      console.log("wgetch(" + i32 + ")");
+      if (!is_wgetch_waiting) {
+        wasm.instance.exports.asyncify_start_unwind();
+      } else {
+        wasm.instance.exports.asyncify_stop_rewind();
+      }
+      is_wgetch_waiting = !is_wgetch_waiting;
+      return wgetch_c;
+    },
+    tolower: function (i32) { console.log("tolower"); return 0; },
+    halfdelay: function (i32) { console.log("halfdelay"); return 0; },
+    isprint: function (i32) { console.log("isprint"); return 0; },
+    wclrtoeol: function (i32) { console.log("wclrtoeol"); return 0; },
+    delwin: function (i32) { console.log("delwin"); return 0; },
+    localtime: function (i32) {
+      console.log("localtime");
+      let data = malloc_int(9 * 4);
+      let year = new Date().getFullYear() - 1900;
+
+	/* This is for the RIP logic, only care about the year since 1900
+	 * Setting all values of the struct to the year.  It is faster than
+	 * looking it up. */
+
+      for (let i=0; i<9; i++) {
+        memory[data + 4 * i + 3] = 0;
+        memory[data + 4 * i + 2] = 0;
+        memory[data + 4 * i + 1] = year / 256;
+        memory[data + 4 * i + 0] = year % 256;
+      }
+      return data;
+    },
+    addstr: function (i32) {
+      console.log("addstr(" + i32 + ")");
+      let data = i32;
+      let i = 0;
+      while (memory[data + i] != 0) {
+        curses.addch(memory[data + i]);
+	i++;
+      }
+      return 0;
+    },
+    strerror: function (i32) { console.log("strerror"); return 0; },
+    fclose: function (i32) { console.log("fclose"); return 0; },
+    getmaxx: function (i32) { console.log("getmaxx"); return 0; },
+    getmaxy: function (i32) { console.log("getmaxy"); return 0; },
+    werase: function (i32) { console.log("werase"); return 0; },
+
+    /* (type (;3;) (func (param i32 i32 i32) (result i32))) */
+    mvaddch: function(i32_1, i32_2, i32_3) {
+      console.log("mvaddch(" + i32_1 + "," + i32_2 + "," + i32_3 + ")");
+      let y = i32_1;
+      let x = i32_2;
+      let c = i32_3;
+      curses.move(y,x);
+      curses.addch(c);
+      return 0;
+    },
+    wmove: function(i32_1, i32_2, i32_3) { console.log("wmove"); return 0; },
+    sprintf: function(i32_1, i32_2, i32_3) {
+      console.log("sprintf(" + i32_1 + "," + i32_2 + "," + i32_3 + ")");
+      let s = s_from_printf(i32_2, i32_3);
+      let data = i32_1;
+      let i;
+      for (i=0; i<s.length; i++) {
+        memory[data + i] = s.charCodeAt(i);
+      }
+      memory[data + i] = 0;
+      return i;
+    },
+    vsprintf: function(i32_1, i32_2, i32_3) {
+      console.log("vsprintf(" + i32_1 + "," + i32_2 + "," + i32_3 + ")");
+      let s = s_from_printf(i32_2, i32_3);
+      let data = i32_1;
+      let i;
+      for (i=0; i<s.length; i++) {
+        memory[data + i] = s.charCodeAt(i);
+      }
+      memory[data + i] = 0;
+      return i;
+    },
+    mvaddstr: function(i32_1, i32_2, i32_3) {
+      console.log("mvaddstr(" + i32_1 + "," + i32_2 + "," + i32_3 + ")");
+      let y = i32_1;
+      let x = i32_2;
+      let data = i32_3;
+      let i = 0;
+      curses.move(y,x);
+      while (memory[data + i] != 0) {
+        curses.addch(memory[data + i]);
+	i++;
+      }
+      return 0;
+    },
+    strncpy: function(i32_1, i32_2, i32_3) {
+      console.log("strncpy(" + i32_1 + "," + i32_2 + "," + i32_3 + ")");
+      let i;
+      let dst = i32_1;
+      let src = i32_2;
+      let n   = i32_3;
+      let s = "";
+      for (i=0; i<n && memory[src + i] != 0; i++) {
+        memory[dst + i] = memory[src + i];
+	s += String.fromCharCode(memory[i32_2 + i]);
+      }
+      for (; i<n; i++) {
+        memory[dst + i] = 0;
+      }
+      console.log(s);
+      return dst;
+    },
+    strncat: function(i32_1, i32_2, i32_3) { console.log("strncat(" + i32_1 + "," + i32_2 + "," + i32_3 + ")"); return 0; },
+    execl: function(i32_1, i32_2, i32_3) { console.log("execl"); return 0; },
+    wprintw: function(i32_1, i32_2, i32_3) {
+      console.log("wprintw(" + i32_1 + "," + i32_2 + "," + i32_3 + ")");
+      return 0;
+    },
+    strncmp: function(i32_1, i32_2, i32_3) { console.log("strncmp"); return 0; },
+    memcpy: function(i32_1, i32_2, i32_3) {
+      console.log("memcpy(" + i32_1 + "," + i32_2 + "," + ")");
+      let dst = i32_1;
+      let src = i32_2;
+      let n = i32_3;
+      for (let i=0; i<n; i++) {
+        memory[dst + i] = memory[src + i];
+      }
+      return dst;
+    },
+    wgetnstr: function(i32_1, i32_2, i32_3) { console.log("wgetnstr"); return 0; },
+    fgets: function(i32_1, i32_2, i32_3) {
+      console.log("fgets(" + i32_1 + "," + i32_2 + "," + i32_3 + ")");
+      let dst = i32_1;
+      let max_size = i32_2;
+      let stream = i32_3;
+      if (!is_fgets_waiting) {
+        wasm.instance.exports.asyncify_start_unwind();
+      } else {
+        wasm.instance.exports.asyncify_stop_rewind();
+      }
+      is_fgets_waiting = !is_fgets_waiting;
+      return dst;
+    },
+    sscanf: function(i32_1, i32_2, i32_3) { console.log("sscanf"); return 0; },
+    memset: function(i32_1, i32_2, i32_3) { console.log("memset"); return 0; },
+    mvwinch: function(i32_1, i32_2, i32_3) { console.log("mvwinch"); return 0; },
+    mvwin: function(i32_1, i32_2, i32_3) { console.log("mvwin"); return 0; },
+
+    /* (type (;4;) (func (result i32))) */
+    standout: function() { console.log("standout"); return 0; },
+    standend: function() { console.log("standend"); return 0; },
+    refresh: function() {
+      console.log("refresh");
+      return draw_gl();
+    },
+    inch: function() {
+      let c = curses.inch();
+      console.log("inch(): " + c);
+      return c;
+    },
+    clrtoeol: function() {
+      console.log("clrtoeol()");
+      curses.clrtoeol();
+      return 0;
+    },
+    raw: function() { console.log("raw"); return 0; },
+    noecho: function() { console.log("noecho"); return 0; },
+    flushinp: function() { console.log("flushinp"); return 0; },
+    initscr: function() { console.log("initscr"); return 0; },
+    endwin: function() {
+      console.log("endwin");
+      is_endwin = true;
+      return 0;
+    },
+    baudrate: function() { console.log("baudrate"); return 0; },
+    clear: function() {
+      console.log("clear()");
+      curses.clear();
+      return 0;
+    },
+    isendwin: function() { console.log("isendwin"); return 0; },
+    getgid: function() { console.log("getgid"); return 0; },
+    getuid: function() { console.log("getuid()" ); return 0; },
+    getpid: function() { console.log("getpid"); return 0; },
+    fork: function() { console.log("fork"); return 0; },
+    erasechar: function() { console.log("erasechar"); return 0; },
+    killchar: function() { console.log("killchar"); return 0; },
+    nocbreak: function() { console.log("nocbreak"); return 0; },
+    __errno_location: function() { console.log("__errno_location"); return 0; },
+
+    /* (type (;5;) (func (param i32) (result i64))) */
+    time: function(i32) { console.log("time"); return BigInt(Math.floor(Date.now()/1000)); },
+
+    /* (type (;6;) (func (param i32 i32 i32 i32) (result i32))) */
+    newwin: function(i32_1, i32_2, i32_3, i32_4) { console.log("newwin"); return 0; },
+    mvcur: function(i32_1, i32_2, i32_3, i32_4) { console.log("mvcur"); return 0; },
+    mvprintw: function(i32_1, i32_2, i32_3, i32_4) { console.log("mvprintw"); return 0; },
+    fread: function(i32_1, i32_2, i32_3, i32_4) { console.log("fread"); return 0; },
+    mvwaddch: function(i32_1, i32_2, i32_3, i32_4) { console.log("mvwaddch"); return 0; },
+
+    /* (type (;7;) (func (param i32 i32))) */
+    setbuf: function(i32_1, i32_2) { console.log("setbuf"); },
+
+    /* (type (;8;) (func)) */
+    abort: function() { console.log("abort"); },
+
+    /* (type (;9;) (func (param i32 i32 i32 i32 i32) (result i32))) */
+    mvwprintw: function(i32_1, i32_2, i32_3, i32_4, i32_5) { console.log("mvwprintw"); return 0; },
+    subwin: function(i32_1, i32_2, i32_3, i32_4, i32_5) { console.log("subwin"); return 0; },
+  }
+};
+
+function resize()
+{
+  let el = document.getElementById("canvas");
+  el.width = window.innerWidth;
+  el.height = window.innerHeight;
+  gl.viewport(0,0,el.width,el.height);
+  console.log(el.width, el.height);
+  draw_gl();
+
+}
+
+function create_prag(vbo, caM_data)
+{
+  return Prag({
+    gl: gl,
+    vars: {
+      coord: [ 'vertexAttribPointer', 2, gl.FLOAT, false, 4 * 4, 0 ],
+      texCoord: [ 'vertexAttribPointer', 2, gl.FLOAT, false, 4 * 4, 2 * 4 ],
+      caM: [ 'uniformMatrix4fv', false, caM_data ]
+    },
+    vbo: {
+      coord: vbo,
+      texCoord: vbo
+    }
+  });
+}
+
+function create_prog()
+{
+  let options = {
+    gl: gl,
+    src: { },
+    location_fx: {
+      coord: 'getAttribLocation',
+      texCoord: 'getAttribLocation',
+      caM: 'getUniformLocation'
+    },
+    enable_fx: {
+      coord: 'enableVertexAttribArray',
+      texCoord: 'enableVertexAttribArray',
+    }
+  }
+  options.src[gl.VERTEX_SHADER] = `
+precision highp float;
+attribute vec2  coord;
+attribute vec2  texCoord;
+varying   vec2  st;
+varying   vec2  colorCoord;
+uniform   mat4  caM;
+
+void main() {
+  st = texCoord;
+  gl_Position = caM * vec4(coord.x, coord.y, 0.0, 1.0);
+  colorCoord = vec2(1.0 + gl_Position.x / 2.0, 1.0 + gl_Position.y / 2.0);
+}
+`;
+
+  options.src[gl.FRAGMENT_SHADER] = `
+precision highp float;
+varying vec2 st;
+varying vec2 colorCoord;
+void main() {
+  float flip  = 0.0;
+  float s     = st.x;
+  float t     = st.y;
+  float alpha = 1.0;
+  if (t < 0.0) {
+    flip = 1.0;
+    t    = -t;
+  }
+  if (1.0 - (s * s) < t) {
+    alpha = flip;
+  } else {
+    alpha = 1.0 - flip;
+  }
+  if (alpha == 1.0) {
+    gl_FragColor = vec4(1.0, 1.0, 1.0, alpha);
+  } else {
+    discard;
+  }
+}
+`;
+  return Program(options);
+}
+
+function init_gl()
+{
+  let options = { alpha: true };
+  let el = document.getElementById("canvas");
+  try { gl = el.getContext("webgl", options) } catch (e) { }
+  try { gl = gl || canvas.getContext("experimental-webgl", options); } catch(e) { }
+  if (gl == null) {
+    console.log("couldn't create GL instance");
+    return;
+  }
+  curses = Curses({ LINES: 24, COLS: 80, gl: gl, glf: glf });
+  window.onresize = resize;
+  window.onkeydown = keydown;
+  resize();
+}
+
+function draw_gl()
+{
+  gl.clearColor(0.0, 0.0, 0.0, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT + gl.DEPTH_BUFFER_BIT);
+  return curses.refresh();
+}
+
+function start_rogue()
+{
+  if (!wasm_done || !glf_done) {
+    return;
+  }
+  init_gl();
+  wasm.instance.exports.main("rogue");
+  console.log("start_rogue exits to stop_unwind");
+  wasm.instance.exports.asyncify_stop_unwind();
+}
+
+WebAssembly.instantiateStreaming(fetch("rogue-asyncify.wasm"), importObject).then(
+  function (obj) {
+    memory = new Uint8Array(obj.instance.exports.memory.buffer);
+    wasm = obj;
+    wasm_done = true;
+    start_rogue();
+  }
+)
+
+
+function read_next_chunk(reader, result)
+{
+  if (glf_done) {
+    return;
+  }
+
+  if (result.value != null) {
+    glf_s += new TextDecoder().decode(result.value);
+  }
+  console.log({reader, result });
+  if (!result.done) {
+    reader.read().then(
+      function(result) {
+        read_next_chunk(reader, result);
+      }
+    )
+  } else {
+    glf = JSON.parse(glf_s);
+    glf_done = true;
+    start_rogue();
+  }
+}
+
+fetch("VT323-Regular.ttf.glf.json").then(
+  function(response) { 
+    const reader = response.body.getReader();
+    read_next_chunk(reader, { done: false, value: null });
+  }
+)
+</script>
+</head>
+<body>
+<canvas id="canvas" style="position: absolute; right: 0px; bottom: 0px;">
+</canvas>
+</body>
+</html>

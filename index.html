@@ -2,15 +2,768 @@
 <html>
 <head>
 <title>rogue</title>
-<script src="matrix.js">
+<script>
+var NS_Matrix = { }
+
+NS_Matrix.idx = function (i,j)
+{
+  let x = i;
+  if (j != undefined) {
+    x = i + this._n * j;
+  }
+  if (x < 0 || x >= this._length) { return null; }
+  return x;
+}
+
+NS_Matrix.dim = function (n, m)
+{
+  return ((this._n === n) && (this._m === m));
+}
+
+NS_Matrix.size = function ()
+{
+  return this._length * this._size;
+}
+
+NS_Matrix.identity = function ()
+{
+  if (this._n != this._m) {
+    console.error("Identity matrices must be square");
+    return;
+  }
+  this.zero()
+  for (let i = 0; i < this._n; i++) {
+    this._data[this.idx(i,i)] = 1;
+  }
+}
+
+NS_Matrix.zero = function ()
+{
+  for (let i = 0; i < this._length; i++) {
+    this._data[i] = 0;
+  }
+}
+
+NS_Matrix.copy = function (m)
+{
+  if (this.dim(m._n, m._m) || m._type != type) {
+    console.error("Type/Dimension mismatch");
+    return;
+  }
+  m._data = this._data.slice(0)
+}
+
+NS_Matrix.mul = function (A,B)
+{
+  if (A._type != this._type || this._type != B._type) {
+    console.error("Type mismatch");
+    return;
+  }
+  if (A._m != B._n || !this.dim(A._n, B._m)) {
+    console.error(`Dimension mismatch: ${A._m} != ${B._n} || ${!this.dim(A._n, B._m)}` );
+    return;
+  }
+  for (let i = 0; i < this._n; i++) {
+    for (let j = 0; j < this._m; j++) {
+      let ix = this.idx(i,j)
+      this._data[ix] = 0;
+      for (let k = 0; k < this._n; k++) {
+        this._data[ix] += A._data[A.idx(i,k)] * B._data[B.idx(k,j)];
+      }
+    }
+  }
+}
+
+NS_Matrix.sub = function (u,v)
+{
+  if (!this.dim(u._n,u._m) || !this.dim(v._n,v._m)) {
+    console.error("Dimension mismatch");
+    return;
+  }
+  if (this._type != u._type || this._type != v._type) {
+    console.error("Type mismatch");
+    return;
+  }
+  for (let i = 0; i < this._length; i++) {
+    this._data[i] = u._data[i] - v._data[i];
+  }
+  this._decomposed = false;
+}
+
+NS_Matrix.add = function (u,v)
+{
+  if (!this.dim(u._n,u._m) || !this.dim(v._n,v._m)) {
+    console.error("Dimension mismatch");
+    return;
+  }
+  if (this._type != u._type || this._type != v._type) {
+    console.error("Type mismatch");
+    return;
+  }
+  for (let i = 0; i < this._length; i++) {
+    this._data[i] = u._data[i] + v._data[i];
+  }
+  this._decomposed = false;
+}
+
+NS_Matrix.transpose = function (M)
+{
+  if (!this.dim(M._m, M._n)) {
+    console.error("Transpose dimension mismatch");
+    return;
+  }
+  if (this._type != M._type) {
+    console.error("Type mismatch");
+    return;
+  }
+  for (let i = 0; i < this._n; i++) {
+    for (let j = 0; j < this._m; j++) {
+      this.set(i,j,M.get(j,i));
+    }
+  }
+}
+
+NS_Matrix.set = function (i,j,v)
+{
+  if (v != undefined) {
+    this._data[i + this._n * j] = v;
+  } else {
+    this._data[i] = j;
+  }
+}
+
+NS_Matrix.get2 = function (i,j)
+{
+  if (j === undefined) { return this._lu[i]; }
+  return this._lu[i + this._n * j];
+}
+
+NS_Matrix.get = function (i,j)
+{
+  if (j === undefined) { return this._data[i]; }
+  return this._data[i + this._n * j];
+}
+
+NS_Matrix.decompose = function ()
+{
+  let Tol = 0.001;
+
+  if (this._n != this._m || this._decomposed) { return; }
+
+  for (let i = 0; i < this._length; i++) {
+    this._lu[i] = this._data[i]
+  }
+
+  for (i = 0; i <= this._n; i++) {
+    this._P[i] = i
+  }
+
+  for (i = 0; i < this._n; i++) {
+    let maxA = 0.0;
+    let imax = i;
+
+    for (let k = i; k < this._n; k++) {
+      let absA = Math.abs(this._lu[this.idx(k,i)])
+      if (absA > maxA) {
+        maxA = absA;
+	imax = k;
+      }
+    }
+
+    if (maxA < Tol) {
+      console.error('Matrix is degenerate (' + maxA + ' < ' + Tol + ')');
+      return;
+    }
+
+    if (imax != i) {
+      // Pivoting P
+      this._P[imax] ^= this._P[i];
+      this._P[i] ^= this._P[imax];
+      this._P[imax] ^= this._P[i];
+
+      // pivoting rows of A
+      for (let j = 0; j < this._m; j++) {
+        let tmp = this._lu[this.idx(i,j)]
+	this._lu[this.idx(i,j)] = this._lu[this.idx(imax,j)];
+        this._lu[this.idx(imax,j)] = tmp;
+      }
+
+      this._P[this._n]++;
+    }
+
+    for (j = i + 1; j < this._n; j++) {
+      this._lu[this.idx(j,i)] /= this._lu[this.idx(i,i)]
+      for (k = i + 1; k < this._n; k++) {
+        this._lu[this.idx(j,k)] -=
+                 this._lu[this.idx(j,i)] * this._lu[this.idx(i,k)]
+      }
+    }
+  }
+  this._decomposed = true;
+  return;
+}
+
+NS_Matrix.determinant = function ()
+{
+  if (this._det != null) { return this._det; }
+  this.decompose();
+  if (!this._decomposed) { return null; }
+  this._det = this._lu[this.idx(0,0)];
+  for (let i = 1; i < this._n; i++) {
+    this._det = this._det * this._lu[this.idx(i,i)];
+  }
+  if ((this._P[this._n] - this._n) % 2 === 1) {
+    this._det = -this._det;
+  }
+  return this._det
+}
+
+NS_Matrix.invert = function (m)
+{
+  m.decompose();
+  if (!m._decomposed) {
+    console.error("Can't invert degenerate matrix");
+    return;
+  }
+  for (let j = 0; j < this._n; j++) {
+    for (let i = 0; i < this._n; i++) {
+      if (m._P[i] == j) {
+        this.set(i,j,1);
+      } else {
+        this.set(i,j,0);
+      }
+      for (let k = 0; k < i; k++) {
+        let val = this.get(i,j) - m.get2(i,k) * this.get(k,j)
+        this.set(i,j,val);
+      }
+    }
+    for (let i = this._n - 1; i >= 0; i--) {
+      for (let k = i + 1; k < this._n; k++) {
+        let val = this.get(i,j) - m.get2(i,k) * this.get(k,j)
+        this.set(i,j,val);
+      }
+      this.set(i,j,this.get(i,j)/m.get2(i,i));
+    }
+  }
+  this._decomposed = false;
+}
+
+NS_Matrix.print = function ()
+{
+  s = '';
+  for (let i = 0 ; i < this._n; i++) {
+    if (i > 0) { s += '\n'; }
+    for (let j = 0; j < this._m; j++) {
+      if (j > 0) { s += ','; }
+      s += this.get(i,j);
+      //s += this._data[i + j * this._n];
+    }
+  }
+  console.log(s);
+}
+
+function matrix(type, n, m)
+{
+  let length = n * m
+  let mat = {
+    _n: n,
+    _m: m,
+    _type: type,
+    _length: length,
+    _size: type.BYTES_PER_ELEMENT,
+    _data: new type(length),
+    _lu: null,
+    _P: null,
+    _decomposed: false,
+    _det: null,
+    idx: NS_Matrix.idx,
+    copy: NS_Matrix.copy,
+    dim: NS_Matrix.dim,
+    size: NS_Matrix.size,
+    add: NS_Matrix.add,
+    sub: NS_Matrix.sub,
+    mul: NS_Matrix.mul,
+    set: NS_Matrix.set,
+    get: NS_Matrix.get,
+    get2: NS_Matrix.get2,
+    transpose: NS_Matrix.transpose,
+    identity: NS_Matrix.identity,
+    zero: NS_Matrix.zero,
+    determinant: NS_Matrix.determinant,
+    decompose: NS_Matrix.decompose,
+    invert: NS_Matrix.invert,
+    print: NS_Matrix.print
+  }
+  if (n === m) {
+    mat._lu = new type(length)
+    mat._P = new Int8Array(length)
+  }
+  return mat
+}
+
+function Matrix(type, n, m, arr)
+{
+  let mat = matrix(type, n, m);
+  for (let i = 0; i < arr.length; i++) {
+    mat.set(i,arr[i]);
+  }
+  return mat
+}
+
 </script>
-<script src="curses.js">
+<script>
+NS_curses = { };
+
+NS_curses.calc_index = function(x,y)
+{
+  return y * this.COLS + x;
+}
+
+NS_curses.move = function(y,x)
+{
+  this.pos.x = x;
+  this.pos.y = y;
+}
+
+NS_curses.clear = function()
+{
+  for (let i=0; i<(this.LINES * this.COLS); i++) {
+    this.grid[i] = 32;
+  }
+}
+
+NS_curses.inch = function()
+{
+  return this.grid[this.calc_index(this.pos.x, this.pos.y)];
+}
+
+NS_curses.addch = function(c)
+{
+  if (c == 10) {
+    this.pos.x = 0;
+    this.pos.y++;
+    return;
+  }
+  this.grid[this.calc_index(this.pos.x, this.pos.y)] = c;
+  this.pos.x++;
+}
+
+NS_curses.clrtoeol = function()
+{
+  while (this.pos.x < this.COLS) {
+    this.addch(32);
+  }
+}
+
+NS_curses.getcury = function(w)
+{
+  return this.pos.y;
+}
+
+NS_curses.getcurx = function(w)
+{
+  return this.pos.x;
+}
+
+NS_curses.printw = function(s)
+{
+  for (let i=0; i<s.length; i++) {
+    this.addch(s[i]);
+  }
+}
+
+function lookup_cmap_glyph_sub(cmap, char_code)
+{
+  switch (cmap.format) {
+    case 0: return null;
+    case 4:
+      let i;
+      let length = cmap.startCode.length;
+      if (length != cmap.endCode.length) {
+        alert("cmap length mismatch startCode != endCode");
+        return null;
+      }
+      if (length != cmap.idRangeOffset.length) {
+        alert("cmap length mismatch startCode != idRangeOffset");
+        return null;
+      }
+      if (length != cmap.idDelta.length) {
+        alert("cmap length mismatch startCode != idDelta");
+        return null;
+      }
+      for (i=0; i<length; i++) {
+        if (cmap.startCode[i] <= char_code && char_code <= cmap.endCode[i]) {
+          break;
+	}
+      }
+      if (i == length) {
+        return null;
+      }
+      if (cmap.idRangeOffset[i] == 0) {
+        return cmap.idDelta[i] + char_code;
+      }
+      let index_offset = i + cmap.idRangeOffset[i] / 2 + (char_code - cmap.startCode[i]);
+      if (index_offset < cmap.idRangeOffset.length) {
+        return cmap.idRangeOffset[index_offset];
+      }
+      if (index_offset - length < cmap.glyphIdArray.length) {
+        return cmap.glyphIdArray[index_offset - length];
+      }
+      return null;
+      break;
+    case 6:
+      if (cmap.firstCode <= char_code && char_code < (cmap.firstCode + cmap.entryCount)) {
+        return cmap.glyphIdArray[char_code - cmap.firstCode];
+      }
+      return null;
+    default:
+      alert("(Lookup) Unhandled format: " + cmap.format);
+      break;
+
+  }
+}
+
+function lookup_cmap_glyph(cmap, char_code)
+{
+  let ret = null;
+  for (let i=0; i<cmap.subtables.length; i++) {
+    ret = lookup_cmap_glyph_sub(cmap.subtables[i], char_code);
+    if (ret != null) {
+      break;
+    }
+  }
+  return ret;
+}
+
+function draw(arg)
+{
+  let idx = lookup_cmap_glyph(arg.glf.cmap, arg.charCode);
+  let tab = arg.glf.lookup[idx];
+  if (tab == null) {
+    if (arg.charCode != 32) {
+      console.log("error looking up: " + arg.charCode);
+    }
+    return;
+  }
+  arg.vao.bind(arg.gl.ELEMENT_ARRAY_BUFFER);
+  const ext = gl.getExtension("OES_element_index_uint");
+  let start = tab.start;
+  let len = tab.len;
+  arg.gl.drawElements(arg.gl.TRIANGLES, len, arg.gl.UNSIGNED_INT, 4 * start);
+}
+
+
+NS_curses.refresh = function()
+{
+  let xmin = 0;
+  let ymin = -409;
+  let scale = 0.0004885197850512946;
+
+  let m_T = Matrix(Float32Array, 4, 4, [ 1, 0, 0, 0,
+                                         0, 1, 0, 0,
+                                         0, 0, 1,     0,
+                                         -xmin, -ymin, 0,     1 ]);
+
+  let m_S = Matrix(Float32Array, 4, 4, [scale,     0, 0, 0,
+                                             0, scale, 0, 0,
+                                             0,     0, 1, 0,
+                                             0,     0, 0, 1 ]);
+
+  let m_ST = matrix(Float32Array, 4, 4);
+  m_ST.mul(m_S, m_T);
+  for (let y=0; y<this.LINES; y++) {
+    for (let x=0; x<this.COLS; x++) {
+      let c = this.grid[this.calc_index(x,y)];
+      let scale1 = 2 / (this.COLS);
+      let scale2 = 2 / (this.LINES);
+      let m_T2 = Matrix(Float32Array, 4, 4, [ 1, 0, 0, 0,
+                                              0, 1, 0, 0,
+                                              0, 0, 1,     0,
+                                              -1.0 + (scale1 * x), 1.0 -(scale2 * (y+1)), 0,   1 ]);
+
+      let m_S2 = Matrix(Float32Array, 4, 4, [ scale1,     0, 0, 0,
+                                              0, scale2, 0, 0,
+                                              0,     0, 1, 0,
+                                              0,     0, 0, 1 ]);
+      let m_ST2 = matrix(Float32Array, 4, 4);
+      m_ST2.mul(m_T2, m_S2);
+      this.caM.mul(m_ST2, m_ST);
+      this.prag.run(this.prog, draw, { gl: this.gl, vao: this.vao, glf: this.glf, charCode: c });
+    }
+  }
+}
+
+function Curses(options)
+{
+  if (options.gl == undefined) {
+    alert("Curses(options) must define options.gl");
+    return null;
+  }
+  if (options.glf == undefined) {
+    alert("Curses(options) must define options.glf");
+    return null;
+  }
+  let glf = options.glf;
+  let vbo_m = Matrix(Float32Array, 4, glf.pts.length / 4, glf.pts);
+  let vbo = VBO({ gl: options.gl, m: vbo_m});
+  let vao_m = Matrix(Uint32Array, 1, glf.idx.length, glf.idx);
+  let vao = VBO({ gl: options.gl, m: vao_m});
+  let caM = matrix(Float32Array, 4, 4);
+  let prog = create_prog();
+  let prag = create_prag(vbo, caM._data);
+  let c = {
+    gl: options.gl,
+    glf: options.glf,
+    caM: caM,
+    prog: prog,
+    prag: prag,
+    vbo: vbo,
+    vao: vao,
+    LINES: options.LINES || 24,
+    COLS: options.COLS || 80,
+    pos: { x: 0, y: 0 },
+    grid: [],
+    calc_index: NS_curses.calc_index,
+    move: NS_curses.move,
+    inch: NS_curses.inch,
+    addch: NS_curses.addch,
+    getcurx: NS_curses.getcurx,
+    getcury: NS_curses.getcury,
+    refresh: NS_curses.refresh,
+    clrtoeol: NS_curses.clrtoeol,
+    clear: NS_curses.clear,
+  };
+  c.clear();
+  return c;
+}
 </script>
-<script src="vbo.js">
+<script>
+var NS_VBO = { }
+
+NS_VBO.NOP = function () { }
+
+NS_VBO.init = function ()
+{
+  this.id = this.gl.createBuffer()
+  this.init = NS_VBO.NOP;
+}
+
+NS_VBO.reload_sub = function (target)
+{
+  this.gl.bufferData(target, this.m._data, this.usage)
+  this.reload_sub = NS_VBO.NOP;
+}
+
+NS_VBO.reload = function ()
+{
+  this.reload_sub = VBO_reload_sub
+}
+
+NS_VBO.bind = function (target)
+{
+  this.init()
+  this.gl.bindBuffer(target, this.id)
+  this.reload_sub(target)
+}
+
+NS_VBO.m_alert = function (index, vbo, arg2)
+{
+  vbo.reload()
+}
+
+function VBO(options)
+{
+  options = options || { };
+  if (options.m === undefined) {
+    console.error("options needs m");
+    return null;
+  }
+  if (options.gl === undefined) {
+    console.error("options needs gl");
+    return null;
+  }
+  let gl = options.gl
+  let m  = options.m;
+  return {
+    m: m,
+    gl: gl,
+    init: NS_VBO.init,
+    usage: options.usage || gl.STATIC_DRAW,
+    bind: NS_VBO.bind,
+    reload: NS_VBO.reload,
+    reload_sub: NS_VBO.reload_sub,
+  };
+}
+
 </script>
-<script src="program.js">
+<script>
+var NS_Program = { };
+
+NS_Program.NOP = function () { }
+
+NS_Program.compile = function (progtype, src, force)
+{
+  let shader = this.gl.createShader(progtype);
+  this.gl.shaderSource(shader, src)
+  this.gl.compileShader(shader)
+  let log = this.gl.getShaderInfoLog(shader)
+  if (log.length > 0) {
+    console.error(log)
+    if (force) {
+      if (!this.gl.getShaderParameter(shader, this.gl.COMPILE_STATUS)) {
+        console.error(src)
+        return -1;
+      } else {
+        return shader;
+      }
+    }
+    console.error(src);
+    return -1;
+  }
+  return shader;
+}
+
+NS_Program.init = function ()
+{
+  this.shaders = { }
+
+  for (id in this.src) {
+    let src = this.src[id]
+    this.shaders[id] = this.compile(id, src)
+    if (this.shaders[id] === -1) {
+      this.id = 0;
+      return;
+    }
+  }
+
+  this.id = this.gl.createProgram()
+
+  for (id in this.shaders) {
+    let shader = this.shaders[id]
+    this.gl.attachShader(this.id, shader)
+  }
+
+  this.init = NS_Program.NOP
+}
+
+NS_Program.link = function ()
+{
+  for (i in this.parameters) {
+    let fxs = this.parameters[i]
+    switch(fxs.length) {
+      case 2: fxs[0](this.id, fxs[1]); break;
+      case 3: fxs[0](this.id, fxs[1], fxs[2]); break;
+      case 4: fxs[0](this.id, fxs[1], fxs[2], fxs[3]); break;
+    }
+  }
+
+  for (i in this.transform_feedback) {
+    let id = this.transform_feedback[i]
+    this.gl.transformFeedbackVaryings(this.id, id, this.gl.INTERLEAVED_ATTRIBS)
+  }
+
+  this.gl.linkProgram(this.id);
+
+  let log = this.gl.getProgramInfoLog(this.id);
+  if (log.length > 0) {
+    console.error(log)
+  }
+
+  if (!this.gl.getProgramParameter(this.id, this.gl.LINK_STATUS)) {
+    console.error('LINK ERROR')
+    this.id = 0
+  }
+
+  for (id in this.location_fx) {
+    let fx = this.location_fx[id];
+    this.locs[id] = this.gl[fx](this.id, id);
+  }
+
+  for (id in this.enable_fx) {
+    let fx = this.enable_fx[id];
+    this.gl[fx](this.locs[id])
+  }
+
+  this.link = NS_Program.NOP;
+}
+
+NS_Program.use = function ()
+{
+  this.init();
+  this.link();
+  this.gl.useProgram(this.id);
+}
+
+NS_Program.run = function (draw, draw_arg)
+{
+  this.use()
+  draw(draw_arg)
+}
+
+function Program(options)
+{
+  options = options || { }
+  if (options.gl === undefined) {
+    console.error('options does not contains gl element');
+    return null;
+  }
+  let _program = {
+    options: options,
+    gl: options.gl,
+    use: NS_Program.use,
+    _type: options._type || Float32Array,
+    src: options.src || { },
+    id: 0,
+    color: options.color || { r: 1.0, g: 1.0, b: 1.0 },
+    link: NS_Program.link,
+    compile: NS_Program.compile,
+    init: NS_Program.init,
+    run: NS_Program.run,
+    location_fx: options.location_fx || { },
+    enable_fx: options.enable_fx || { },
+    transform_feedback: options.transform_feedback || { },
+    parameters: options.parameters || { },
+    locs: { }
+  }
+  return _program;
+}
+
 </script>
-<script src="prag.js">
+<script>
+var NS_Prag = { }
+
+NS_Prag.run = function (prog, draw, draw_arg)
+{
+  prog.use()
+  for (id in this.vars) {
+    let fxs = this.vars[id]
+    let loc = prog.locs[id]
+    if (this.vbo[id] != undefined) {
+      this.vbo[id].bind(prog.gl.ARRAY_BUFFER)
+    }
+    if (loc != undefined) {
+      switch(fxs.length) {
+        case 2: prog.gl[fxs[0]](loc, fxs[1]); break;
+        case 3: prog.gl[fxs[0]](loc, fxs[1], fxs[2]); break;
+        case 4: prog.gl[fxs[0]](loc, fxs[1], fxs[2], fxs[3]); break;
+        case 5: prog.gl[fxs[0]](loc, fxs[1], fxs[2], fxs[3], fxs[4]); break;
+        case 6: prog.gl[fxs[0]](loc, fxs[1], fxs[2], fxs[3], fxs[4], fxs[5]);
+            break;
+      }
+    }
+  }
+  draw(draw_arg)
+}
+
+function Prag(options)
+{
+  options = options || { }
+  return {
+    vbo: options.vbo || { },
+    vars: options.vars || { },
+    run: NS_Prag.run
+  };
+}
 </script>
 <script>
 var curses;
