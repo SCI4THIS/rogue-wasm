@@ -12,6 +12,8 @@
 </script>
 <script src="prag.js">
 </script>
+<script src="VT323-glf.js">
+</script>
 <script>
 var curses;
 var wasm;
@@ -20,7 +22,7 @@ var table;
 var tail = 0;
 var glf_s = "";
 var glf;
-var glf_done = false;
+var glf_done = true;
 var wasm_done = false;
 var gl;
 var caM = matrix(Float32Array, 4, 4);
@@ -762,37 +764,6 @@ WebAssembly.instantiateStreaming(fetch("rogue-asyncify.wasm"), importObject).the
     wasm = obj;
     wasm_done = true;
     start_rogue();
-  }
-)
-
-
-function read_next_chunk(reader, result)
-{
-  if (glf_done) {
-    return;
-  }
-
-  if (result.value != null) {
-    glf_s += new TextDecoder().decode(result.value);
-  }
-  console.log({reader, result });
-  if (!result.done) {
-    reader.read().then(
-      function(result) {
-        read_next_chunk(reader, result);
-      }
-    )
-  } else {
-    glf = JSON.parse(glf_s);
-    glf_done = true;
-    start_rogue();
-  }
-}
-
-fetch("VT323-Regular.ttf.glf.json").then(
-  function(response) { 
-    const reader = response.body.getReader();
-    read_next_chunk(reader, { done: false, value: null });
   }
 )
 </script>
