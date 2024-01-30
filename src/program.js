@@ -15,6 +15,7 @@ NS_Program.compile = function (progtype, src, force)
         console.error(src)
         return -1;
       } else {
+        console.error("Shader was forced through!");
         return shader;
       }
     }
@@ -30,7 +31,7 @@ NS_Program.init = function ()
 
   for (id in this.src) {
     let src = this.src[id]
-    this.shaders[id] = this.compile(id, src)
+    this.shaders[id] = this.compile(id, src, true);
     if (this.shaders[id] === -1) {
       this.id = 0;
       return;
