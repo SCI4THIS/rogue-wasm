@@ -686,20 +686,17 @@ precision highp float;
 attribute vec2  coord;
 attribute vec2  texCoord;
 varying   vec2  st;
-varying   vec2  colorCoord;
 uniform   mat4  caM;
 
 void main() {
   st = texCoord;
   gl_Position = caM * vec4(coord.x, coord.y, 0.0, 1.0);
-  colorCoord = vec2(1.0 + gl_Position.x / 2.0, 1.0 + gl_Position.y / 2.0);
 }
 `;
 
   options.src[gl.FRAGMENT_SHADER] = `
 precision highp float;
 varying vec2 st;
-varying vec2 colorCoord;
 void main() {
   float flip  = 0.0;
   float s     = st.x;
